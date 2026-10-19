@@ -1,0 +1,63 @@
+// TUNNEL — flying down a corridor tiled with the album cover. Tiles light up with the
+// spectrum and a flash races down the tunnel on every beat.
+
+fragment float4 fTunnel(MODE_ARGS) {
+    float2 p = centered(in.uv, u);
+    p = rot(p, sin(u.flow * 0.09) * 0.3);
+    p += float2(sin(u.flow * 0.21), cos(u.flow * 0.17)) * 0.025;
+
+    float2 ap = abs(p);
+    float d = max(max(ap.x, ap.y), 1e-3);
+    float z = 0.2 / d;
+    float travel = u.flow * 0.85;
+
+    float along, side;
+    if (ap.x > ap.y) { along = p.y / ap.x; side = p.x > 0.0 ? 0.0 : 2.0; }
+    else             { along = p.x / ap.y; side = p.y > 0.0 ? 1.0 : 3.0; }
+
+    const float K = 3.0;                              // covers across each wall
+    const float depthScale = 1.5;                     // covers per unit of depth
+    float2 tuv = float2((along * 0.5 + 0.5) * K, (z + travel) * depthScale);
+    float2 cellId = floor(tuv);
+    float2 f = fract(tuv);
+
+    const float gap = 0.05;
+    float2 fw = max(fwidth(tuv), 1e-4);
+    float2 inside = smoothstep(gap - fw, gap + fw, f) * smoothstep(1.0 - gap + fw, 1.0 - gap - fw, f);
+    float tileMask = inside.x * inside.y;
+    // Distance (in tile units) to the nearest tile edge, for a glowing frame line.
+    float2 edge = min(f, 1.0 - f);
+    float frameLine = exp(-min(edge.x / max(fw.x, 1e-4), edge.y / max(fw.y, 1e-4)) * 0.35);
+
+    // Orient every cover upright as seen from inside the tunnel.
+    float2 g = clamp((f - gap) / (1.0 - 2.0 * gap), 0.0, 1.0);
+    float2 artUV;
+    if (side == 0.0)      artUV = float2(1.0 - g.y, g.x);
+    else if (side == 2.0) artUV = float2(g.y, g.x);
+    else if (side == 1.0) artUV = float2(g.x, 1.0 - g.y);
+    else                  artUV = g;
+    float lod = clamp(log2(z * 4.5), 0.0, 7.0);
+    float3 tile = cover(prevArt, art, sLinear, artUV, lod, u.artMix);
+
+    // Position around the tunnel wall → frequency band.
+    float perim = (side + (cellId.x + 0.5) / K) / 4.0;
+    float v = specAt(spectrum, abs(perim * 2.0 - 1.0) * 0.9);
+
+    // Beat flash travelling away from the camera.
+    float flashZ = travel + 0.4 + (1.0 - u.beat) * 7.0;
+    float flash = u.beat * exp(-abs((cellId.y + 0.5) / depthScale - flashZ) * 1.6);
+
+    float3 frameCol = mix(u.c0.rgb, u.c2.rgb, flash);
+    float3 col = mix(u.c3.rgb * 0.5, tile * (0.35 + 1.1 * v + 0.9 * flash), tileMask);
+    col += frameCol * frameLine * (0.25 + 0.9 * u.bass + 1.4 * flash);
+
+    // Light strips along the corners.
+    float corner = exp(-abs(ap.x - ap.y) / d * 28.0);
+    col += u.c1.rgb * corner * (0.15 + 0.5 * u.treble + 1.2 * u.hit);
+
+    // Fog into the palette's shadow tone, and a glowing vanishing point.
+    float fog = exp(-z * 0.2);
+    col = mix(u.c3.rgb * 0.6, col, fog);
+    col += paletteColor(u, u.flow * 0.03) * exp(-d * 11.0) * (0.35 + 0.8 * u.energy);
+    return float4(col, 1.0);
+}

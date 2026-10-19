@@ -1,0 +1,77 @@
+// STARDUST — the cover dissolved into 32,000 glowing particles. Bright parts of the image
+// rise toward you like a relief map, the cloud slowly orbits, and beats blow it apart.
+
+// Background pass: fade the previous frame (motion trails) over a dim palette glow.
+fragment float4 fStardustBackground(MODE_ARGS) {
+    float2 p = centered(in.uv, u);
+    float fade = pow(0.80, u.dt * 60.0);
+    float2 fuv = (in.uv - 0.5) * (0.994 - 0.012 * u.beat) + 0.5;
+    float3 prev = feedback.sample(sLinear, fuv).rgb * fade;
+    float3 glow = u.c3.rgb * 1.6 * smoothstep(0.95, 0.0, length(p)) + u.c0.rgb * 0.05 * u.energy;
+    return float4(prev + glow * (1.0 - fade), 1.0);
+}
+
+struct ParticleOut {
+    float4 pos [[position]];
+    float2 local;
+    float3 color;
+};
+
+vertex ParticleOut vStardust(uint vid [[vertex_id]],
+                             uint iid [[instance_id]],
+                             constant Uniforms& u [[buffer(0)]],
+                             texture2d<float> prevArt [[texture(0)]],
+                             texture2d<float> art [[texture(1)]],
+                             texture2d<float> spectrum [[texture(2)]]) {
+    float side = u.particleSide;
+    float2 cell = float2(fmod(float(iid), side), floor(float(iid) / side));
+    float2 h = hash22(cell + 0.37);
+    float2 huv = (cell + 0.5 + (h - 0.5) * 0.9) / side;
+
+    float3 col = cover(prevArt, art, sLinear, huv, 1.0, u.artMix);
+    float lum = luma(col);
+
+    const float S = 0.80;
+    float3 pos = float3((huv - 0.5) * S, 0.0);
+    float rr = length(pos.xy) / (S * 0.7071);
+    float v = specAt(spectrum, 0.02 + rr * 0.85);
+
+    // Relief: bright pixels lift toward the camera; the spectrum pumps rings of the image.
+    pos.z = -(lum - 0.35) * (0.12 + 0.28 * u.bass) - v * 0.09;
+
+    // Swirling drift.
+    float n1 = valueNoise(huv * 5.0 + float2(u.flow * 0.22, 0.0));
+    float n2 = valueNoise(huv * 5.0 + float2(0.0, u.flow * 0.22) + 13.1);
+    pos.xy += (float2(n1, n2) - 0.5) * (0.012 + 0.11 * u.energy);
+
+    // Beat burst.
+    float2 dir = normalize(pos.xy + 1e-4);
+    pos.xy += dir * u.beat * u.beat * (0.02 + 0.14 * h.x) * (0.4 + lum);
+
+    // Slow orbiting camera.
+    pos.xz = rot(pos.xz, sin(u.flow * 0.09) * 0.6);
+    pos.yz = rot(pos.yz, cos(u.flow * 0.07) * 0.32);
+    const float camDist = 1.2;
+    float persp = camDist / max(camDist + pos.z, 0.2);
+    float2 screen = pos.xy * persp;
+
+    float aspect = u.resX / u.resY;
+    float2 ndc = float2(screen.x / (0.5 * aspect), -screen.y / 0.5);
+
+    float2 corner = float2((vid & 1) ? 1.0 : -1.0, (vid & 2) ? 1.0 : -1.0);
+    float radiusPx = (1.2 + 2.2 * lum + 2.2 * v + 1.4 * u.beat + 0.9 * u.hit * h.y) * persp * (u.resY / 900.0);
+    float2 offset = corner * radiusPx * 2.0 / float2(u.resX, u.resY);
+
+    ParticleOut o;
+    o.pos = float4(ndc + offset, 0.0, 1.0);
+    o.local = corner;
+    float gain = 0.2 * (1.0 + 0.9 * v + 0.5 * u.beat) * min(u.dt * 60.0, 2.0);
+    o.color = saturateColor(col, 1.25) * gain;
+    return o;
+}
+
+fragment float4 fStardust(ParticleOut in [[stage_in]]) {
+    float d2 = dot(in.local, in.local);
+    float k = exp(-d2 * 3.2) * step(d2, 1.0);
+    return float4(in.color * k, 0.0);
+}

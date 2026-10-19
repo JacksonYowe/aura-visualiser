@@ -1,0 +1,23 @@
+// Final pass to the screen: cross-fade between modes, soft highlight roll-off, grain.
+
+fragment float4 fComposite(VOut in [[stage_in]],
+                           constant Uniforms& u [[buffer(0)]],
+                           texture2d<float> scene [[texture(0)]],
+                           texture2d<float> frozen [[texture(1)]]) {
+    float3 c = scene.sample(sLinear, in.uv).rgb;
+    if (u.transition < 1.0) {
+        float3 old = frozen.sample(sLinear, in.uv).rgb;
+        float t = smoothstep(0.0, 1.0, u.transition);
+        c = mix(old, c, t);
+    }
+    c = softClip(c);
+
+    float n = hash21(floor(in.pos.xy) + fract(u.time * 7.13) * float2(41.0, 97.0));
+    c += (n - 0.5) * (2.0 / 255.0);
+    return float4(c, 1.0);
+}
+
+// Straight copy (used when a mode's output needs to be frozen for a cross-fade).
+fragment float4 fCopy(VOut in [[stage_in]], texture2d<float> src [[texture(0)]]) {
+    return float4(src.sample(sLinear, in.uv).rgb, 1.0);
+}

@@ -1,0 +1,175 @@
+// Shared definitions for every Aura visual mode.
+// These files are compiled at launch (MTLDevice.makeLibrary(source:)), concatenated in name order.
+
+#include <metal_stdlib>
+using namespace metal;
+
+struct Uniforms {
+    float4 c0;          // palette: primary
+    float4 c1;          // palette: secondary
+    float4 c2;          // palette: accent
+    float4 c3;          // palette: shadow
+    float resX;         // render target size in pixels
+    float resY;
+    float time;         // seconds since launch
+    float flow;         // music-driven time (runs faster when loud)
+    float beat;         // 1 on a beat, decays to 0
+    float beatCount;    // beats since launch
+    float bass;         // 0..1
+    float mid;
+    float treble;
+    float energy;       // overall loudness 0..1
+    float artMix;       // 0 = previous cover, 1 = current cover
+    float sensitivity;
+    float modeTime;     // seconds since this mode was selected
+    float transition;   // composite: 0 = frozen old frame, 1 = new mode
+    float particleSide; // stardust grid side length
+    float dt;           // seconds since the previous frame
+    float hit;          // snare / hi-hat pulse, 0..1
+    float beatPhase;    // 0 on the beat → 1 just before the next (when tempo is locked)
+    float tempoLock;    // 0..1 confidence in the tempo grid
+    float reserved;
+};
+
+/// Up to 8 ring pulses: data[2k] = age in seconds (−1 = unused), data[2k+1] = strength.
+struct RingPulses {
+    float data[16];
+    float count;
+    float lifetime;     // seconds to spread out and fade
+    float thickness;    // 1 = normal
+    float brightness;   // 1 = normal
+    float colour;       // 0 cover accent, 1 cover main, 2 white, 3 rainbow
+    float pad0, pad1, pad2;
+};
+
+struct VOut {
+    float4 pos [[position]];
+    float2 uv;
+};
+
+// Full-screen triangle. uv origin is the top-left, like Metal textures.
+vertex VOut vFullscreen(uint vid [[vertex_id]]) {
+    float2 p = float2((vid << 1) & 2, vid & 2);
+    VOut o;
+    o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(p.x, 1.0 - p.y);
+    return o;
+}
+
+constexpr sampler sLinear(filter::linear, mip_filter::linear, address::clamp_to_edge);
+constexpr sampler sMirror(filter::linear, mip_filter::linear, address::mirrored_repeat);
+constexpr sampler sRepeat(filter::linear, mip_filter::linear, address::repeat);
+
+#define PI 3.14159265
+#define TAU 6.28318531
+
+// Textures bound for every full-screen mode.
+#define MODE_ARGS \
+    VOut in [[stage_in]], \
+    constant Uniforms& u [[buffer(0)]], \
+    texture2d<float> prevArt [[texture(0)]], \
+    texture2d<float> art [[texture(1)]], \
+    texture2d<float> spectrum [[texture(2)]], \
+    texture2d<float> wave [[texture(3)]], \
+    texture2d<float> feedback [[texture(4)]]
+
+// ---------- helpers ----------
+
+inline float aspectOf(constant Uniforms& u) { return u.resX / u.resY; }
+
+// Centered coordinates: y in [-0.5, 0.5], x scaled by aspect.
+inline float2 centered(float2 uv, constant Uniforms& u) {
+    return (uv - 0.5) * float2(aspectOf(u), 1.0);
+}
+
+inline float2 rot(float2 p, float a) {
+    float c = cos(a), s = sin(a);
+    return float2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+// Cross-faded album cover lookup.
+inline float3 cover(texture2d<float> a, texture2d<float> b, sampler s, float2 uv, float lod, float mixv) {
+    float3 ca = a.sample(s, uv, level(lod)).rgb;
+    float3 cb = b.sample(s, uv, level(lod)).rgb;
+    return mix(ca, cb, mixv);
+}
+
+// Spectrum value at x in [0,1] (bass → treble). g channel holds peak-hold.
+inline float specAt(texture2d<float> t, float x) {
+    return t.sample(sLinear, float2(clamp(x, 0.0, 1.0), 0.5)).r;
+}
+inline float peakAt(texture2d<float> t, float x) {
+    return t.sample(sLinear, float2(clamp(x, 0.0, 1.0), 0.5)).g;
+}
+inline float waveAt(texture2d<float> t, float x) {
+    return t.sample(sLinear, float2(clamp(x, 0.0, 1.0), 0.5)).r;
+}
+
+inline float hash21(float2 p) {
+    p = fract(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+inline float2 hash22(float2 p) {
+    float n = hash21(p);
+    return float2(n, hash21(p + n + 17.17));
+}
+
+inline float valueNoise(float2 p) {
+    float2 i = floor(p), f = fract(p);
+    float2 w = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i), b = hash21(i + float2(1, 0));
+    float c = hash21(i + float2(0, 1)), d = hash21(i + float2(1, 1));
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+inline float fbm(float2 p) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) {
+        v += a * valueNoise(p);
+        p = rot(p, 0.5) * 2.02 + 11.7;
+        a *= 0.5;
+    }
+    return v;
+}
+
+inline float3 paletteColor(constant Uniforms& u, float t) {
+    t = fract(t) * 3.0;
+    float3 a = u.c0.rgb, b = u.c1.rgb, c = u.c2.rgb;
+    if (t < 1.0) return mix(a, b, smoothstep(0.0, 1.0, t));
+    if (t < 2.0) return mix(b, c, smoothstep(0.0, 1.0, t - 1.0));
+    return mix(c, a, smoothstep(0.0, 1.0, t - 2.0));
+}
+
+// Gentle highlight roll-off shared by the composite and bubble passes.
+inline float3 softClip(float3 c) {
+    c = max(c, 0.0);
+    float3 over = max(c - 0.85, 0.0);
+    return min(c, 0.85) + 0.15 * (1.0 - exp(-over / 0.15));
+}
+
+inline float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+
+inline float3 saturateColor(float3 c, float amount) {
+    return max(mix(float3(luma(c)), c, amount), 0.0);
+}
+
+inline float sdRoundBox(float2 p, float2 b, float r) {
+    float2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+inline float sdSegment(float2 p, float2 a, float2 b) {
+    float2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+// Blurred, darkened cover filling the screen — the backdrop used by several modes.
+inline float3 coverBackdrop(texture2d<float> prevArt, texture2d<float> art, constant Uniforms& u,
+                            float2 p, float lod, float zoom, float spin) {
+    float a = aspectOf(u);
+    float2 q = rot(p, spin) / max(a, 1.0) / zoom;
+    return cover(prevArt, art, sLinear, q + 0.5, lod, u.artMix);
+}

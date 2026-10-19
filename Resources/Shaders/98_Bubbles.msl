@@ -1,0 +1,96 @@
+// LYRIC BUBBLES — glassy soap bubbles carrying each word. They lens the visuals behind them,
+// shimmer with thin-film colour from the album palette and wobble with the bass.
+
+vertex LyricOut vBubble(uint vid [[vertex_id]], uint iid [[instance_id]],
+                        constant Uniforms& u [[buffer(0)]],
+                        constant LyricInstance* bubbles [[buffer(1)]]) {
+    LyricInstance b = bubbles[iid];
+    float2 corner = float2((vid & 1) ? 1.0 : -1.0, (vid & 2) ? 1.0 : -1.0);
+    const float extent = 1.3;
+    float aspect = u.resX / u.resY;
+    float2 p = float2(b.cx, b.cy) + corner * b.size * extent;
+
+    LyricOut o;
+    o.pos = float4(p.x / (0.5 * aspect), -p.y / 0.5, 0.0, 1.0);
+    o.local = corner * extent;          // bubble radii
+    o.screenUV = float2(p.x / aspect + 0.5, p.y + 0.5);
+    o.rect = float4(b.u0, b.v0, b.du, b.dv);
+    o.size = b.size;
+    o.alpha = b.alpha;
+    o.textAspect = b.textAspect;
+    o.textScale = b.textScale;
+    o.seed = b.seed;
+    o.pop = b.pop;
+    o.progress = b.progress;
+    o.appear = b.appear;
+    o.glow = b.glow;
+    return o;
+}
+
+fragment float4 fBubble(LyricOut in [[stage_in]],
+                        constant Uniforms& u [[buffer(0)]],
+                        texture2d<float> scene [[texture(0)]],
+                        texture2d<float> atlas [[texture(1)]]) {
+    float2 p = in.local;
+    float len = length(p);
+    float ang = atan2(p.y, p.x);
+    float t = u.time;
+
+    // Wobbly outline: breathes with the bass, ripples on pop.
+    float wob = 1.0 + (0.01 + 0.028 * u.bass) * sin(3.0 * ang + t * 3.3 + in.seed * 6.28)
+                    + 0.007 * sin(5.0 * ang - t * 2.1 + in.seed * 11.0)
+                    + 0.05 * in.pop * sin(9.0 * ang + in.seed * 20.0);
+    float r = len / wob;
+    if (r > 1.25) return float4(0.0);
+
+    float px = fwidth(r) * 1.25;
+    float body = smoothstep(1.0 + px, 1.0 - px, r);
+    float z = sqrt(max(1.0 - r * r, 0.0));
+    float edge = 1.0 - z;
+
+    // Lens: sample the scene pulled toward the centre, a bit more for red than blue.
+    float aspect = u.resX / u.resY;
+    float2 dir = p / max(len, 1e-4);
+    float2 radiusUV = float2(in.size / aspect, in.size);
+    float2 bend = -dir * edge * radiusUV * 0.55;
+    float3 bg = float3(scene.sample(sLinear, in.screenUV + bend * 1.08).r,
+                       scene.sample(sLinear, in.screenUV + bend).g,
+                       scene.sample(sLinear, in.screenUV + bend * 0.92).b);
+    bg = softClip(bg);
+
+    // Thin-film iridescence tinted by the cover's palette.
+    float film = valueNoise(p * 1.7 + float2(in.seed * 13.0, t * 0.25)) * 0.9 + r * 0.55 + t * 0.05 + in.seed;
+    float3 rainbow = 0.5 + 0.5 * cos(TAU * (film + float3(0.0, 0.33, 0.67)));
+    float3 sheen = mix(rainbow, paletteColor(u, film * 0.6), 0.55);
+    float fres = pow(edge, 2.2);
+
+    float3 col = bg * mix(0.72, 1.0, fres);                 // slightly darker inside for legible text
+    col = mix(col, u.c3.rgb * 0.6, 0.18 * z);
+    col += sheen * (0.10 + 0.55 * fres) * (0.8 + 0.4 * u.hit);
+    col += sheen * exp(-abs(r - 0.965) * 60.0) * 0.45;       // rim
+
+    // Specular highlights (window reflection + small kicker).
+    float2 hp = (p - float2(-0.36, -0.44)) * float2(1.0, 1.6);
+    col += float3(1.0) * smoothstep(0.34, 0.0, length(hp)) * 0.55;
+    col += float3(1.0) * smoothstep(0.12, 0.0, length(p - float2(0.44, 0.46))) * 0.3;
+
+    // The word.
+    if (in.rect.z > 0.0 && in.textScale > 0.0) {
+        float th = in.textScale;                 // text height in radii
+        float tw = th * in.textAspect;
+        float2 tp = p * (1.0 - 0.08 * edge);     // gentle bulge
+        float2 tuv = tp / float2(tw, th) + 0.5;
+        if (all(tuv > -0.1) && all(tuv < 1.1)) {
+            float2 auv = in.rect.xy + clamp(tuv, 0.0, 1.0) * in.rect.zw;
+            float inside = step(0.0, tuv.x) * step(tuv.x, 1.0) * step(0.0, tuv.y) * step(tuv.y, 1.0);
+            float cov = atlas.sample(sLinear, auv).r * inside;
+            float2 suv = in.rect.xy + clamp(tuv - float2(0.0, -0.06), 0.0, 1.0) * in.rect.zw;
+            float shadow = atlas.sample(sLinear, suv, level(3.0)).r * inside;
+            col = mix(col, col * 0.35, shadow * 0.75);
+            col = mix(col, float3(0.98, 0.96, 0.93), cov);
+        }
+    }
+
+    float a = body * in.alpha * (1.0 - in.pop * in.pop);
+    return float4(col * a, a);
+}

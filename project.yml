@@ -1,0 +1,42 @@
+name: Aura
+options:
+  bundleIdPrefix: app.aura
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    GENERATE_INFOPLIST_FILE: NO
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+targets:
+  Aura:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources/Shaders
+        type: folder
+      - path: Resources/Fonts
+        type: folder
+      - path: Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_NAME: Aura
+        PRODUCT_BUNDLE_IDENTIFIER: app.aura.Aura
+        INFOPLIST_FILE: Support/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Support/Aura.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        COMBINE_HIDPI_IMAGES: YES

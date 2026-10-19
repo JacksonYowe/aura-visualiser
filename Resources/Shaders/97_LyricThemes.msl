@@ -1,0 +1,161 @@
+// The non-bubble lyric styles. All output premultiplied colour.
+
+// KARAOKE — the whole line waits in dim ink; each word fills with the cover's colours as it's sung.
+fragment float4 fLyricKaraoke(LyricOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                              texture2d<float> scene [[texture(0)]], texture2d<float> atlas [[texture(1)]]) {
+    if (in.rect.z <= 0.0) return float4(0.0);
+    float A = in.textAspect;
+    float2 p = in.local;
+    float ink = lyricInk(atlas, in.rect, A, p, 0.0);
+    float shadow = lyricHaze(atlas, in.rect, A, p - float2(0.0, 0.12), 2.6);
+
+    float x01 = p.x / A * 0.5 + 0.5;
+    float started = step(0.0005, in.progress);
+    float sung = smoothstep(in.progress + 0.05, in.progress - 0.05, x01) * started;
+    float front = exp(-abs(x01 - in.progress) * 28.0) * started * step(in.progress, 0.999);
+
+    float3 dim = float3(0.96, 0.94, 0.9) * 0.46;
+    float3 lit = saturateColor(mix(u.c0.rgb, u.c2.rgb, x01), 1.25);
+    lit = mix(lit, float3(1.0), 0.3) * (1.0 + 0.25 * in.glow);
+    float3 col = mix(dim, lit, sung) + float3(1.0) * front * 0.7;
+
+    float halo = lyricHaze(atlas, in.rect, A, p, 3.2) * sung;
+    float3 rgb = col * ink + lit * halo * 0.4;
+    float a = ink + shadow * 0.6 * (1.0 - ink);
+    return float4(rgb, a) * in.alpha;
+}
+
+// NEON — each word buzzes on like a sign, glows in the palette, flickers off when the line ends.
+fragment float4 fLyricNeon(LyricOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                           texture2d<float> scene [[texture(0)]], texture2d<float> atlas [[texture(1)]]) {
+    if (in.rect.z <= 0.0) return float4(0.0);
+    float A = in.textAspect;
+    float2 p = in.local;
+
+    float t = in.appear;
+    float blink = step(0.45, hash11(floor(t * 16.0) + in.seed * 37.0));
+    float power = t >= 1.0 ? 1.0 : mix(blink * smoothstep(0.0, 0.2, t), 1.0, smoothstep(0.55, 0.95, t));
+    float buzz = 0.93 + 0.07 * sin(u.time * 113.0 + in.seed * 40.0) * sin(u.time * 6.3 + in.seed * 9.0);
+    float dying = in.pop > 0.0 ? step(0.4, hash11(floor(in.pop * 20.0) + in.seed * 11.0)) * (1.0 - in.pop) : 1.0;
+    power *= buzz * dying;
+
+    float3 tube = saturateColor(in.seed < 0.5 ? u.c0.rgb : u.c2.rgb, 1.7);
+    tube = tube / max(max(tube.r, max(tube.g, tube.b)), 0.2);
+
+    float core = lyricInk(atlas, in.rect, A, p, 0.0);
+    float rim = clamp(lyricHaze(atlas, in.rect, A, p, 1.3) * 1.5 - core, 0.0, 1.0);
+    float glow = lyricHaze(atlas, in.rect, A, p, 2.2) * 1.0
+               + lyricHaze(atlas, in.rect, A, p, 3.4) * 0.9
+               + lyricHaze(atlas, in.rect, A, p, 4.7) * 0.8;
+    float lift = 1.0 + 0.6 * in.glow + 0.3 * u.hit;
+
+    float3 lit = mix(tube, float3(1.0), 0.35) * core * 1.25 + tube * rim * 1.5 + tube * glow * 1.35 * lift;
+    float3 unlit = tube * core * 0.12;
+    float3 rgb = mix(unlit, lit, power);
+    float a = core * (0.3 + 0.6 * power);
+    return float4(rgb * in.alpha, a * in.alpha);
+}
+
+// CINEMA — big italic serif words pull into focus like film titles and melt away out of focus.
+fragment float4 fLyricCinema(LyricOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                             texture2d<float> scene [[texture(0)]], texture2d<float> atlas [[texture(1)]]) {
+    if (in.rect.z <= 0.0) return float4(0.0);
+    float A = in.textAspect;
+    float2 p = in.local;
+    float e = smoothstep(0.0, 1.0, in.appear);
+    float out = smoothstep(0.0, 1.0, in.pop);
+    float lod = mix(3.8, 0.0, e) + out * 3.8;
+
+    float ink = lyricInk(atlas, in.rect, A, p, lod);
+    ink = min(ink * (1.0 + (lod * 0.35)), 1.0);
+    float shadow = lyricHaze(atlas, in.rect, A, p - float2(0.0, 0.1), 3.5);
+    float bloom = lyricHaze(atlas, in.rect, A, p, 4.0);
+
+    float fade = e * (1.0 - out);
+    float3 ivory = float3(0.97, 0.95, 0.91);
+    float3 rgb = ivory * ink + mix(u.c0.rgb, u.c2.rgb, 0.5) * bloom * 0.22 * (1.0 + in.glow);
+    float a = ink + shadow * 0.45 * (1.0 - ink);
+    return float4(rgb * fade, a * fade) * in.alpha;
+}
+
+inline float3 fireRamp(float h) {
+    h = clamp(h, 0.0, 1.0);
+    float3 c0 = float3(0.25, 0.02, 0.0);
+    float3 c1 = float3(0.95, 0.24, 0.02);
+    float3 c2 = float3(1.0, 0.62, 0.16);
+    float3 c3 = float3(1.0, 0.96, 0.82);
+    if (h < 0.4) return mix(c0, c1, h / 0.4);
+    if (h < 0.75) return mix(c1, c2, (h - 0.4) / 0.35);
+    return mix(c2, c3, (h - 0.75) / 0.25);
+}
+
+// EMBERS — words ignite from the bottom up, glow and cool, then burn away into rising sparks.
+fragment float4 fLyricEmbers(LyricOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                             texture2d<float> scene [[texture(0)]], texture2d<float> atlas [[texture(1)]]) {
+    float2 p = in.local;
+    if (in.rect.z <= 0.0) {
+        float d = length(p) / 1.2;
+        float k = exp(-d * d * 3.0);
+        float3 c = fireRamp(1.0 - in.pop * 0.7) * mix(1.0, 0.6, in.pop);
+        return float4(c * k * in.alpha * 1.8, 0.0);                    // pure light
+    }
+    float A = in.textAspect;
+    float ink = lyricInk(atlas, in.rect, A, p, 0.0);
+    float glow = lyricHaze(atlas, in.rect, A, p, 2.6) * 0.7 + lyricHaze(atlas, in.rect, A, p, 4.0) * 0.5;
+    float shadow = lyricHaze(atlas, in.rect, A, p - float2(0.0, 0.1), 2.8);
+
+    // Ignite from the bottom with a ragged burning front.
+    float n1 = valueNoise(p * float2(2.2, 3.0) + in.seed * 13.0);
+    float topness = 0.5 - p.y * 0.5;
+    float th = n1 * 0.45 + topness * 0.55;
+    float reveal = in.appear * 1.2;
+    float lit = smoothstep(th - 0.02, th + 0.05, reveal);
+    float front = exp(-abs(reveal - th) * 22.0) * step(in.appear, 0.999);
+
+    // Burn away when the line ends.
+    float n2 = valueNoise(p * 3.2 + in.seed * 29.0 + 7.0);
+    float burnt = smoothstep(n2 - 0.03, n2 + 0.03, in.pop * 1.15);
+    float rim = exp(-abs(in.pop * 1.15 - n2) * 18.0) * step(0.001, in.pop) * (1.0 - burnt);
+
+    float flicker = valueNoise(p * float2(3.0, 4.0) + float2(0.0, -u.time * 2.2) + in.seed * 5.0);
+    float heat = mix(1.0, 0.5, in.progress) + (flicker - 0.5) * 0.3 + 0.15 * in.glow;
+    float3 fire = mix(fireRamp(heat), fireRamp(heat) * saturateColor(u.c2.rgb, 1.2) * 1.5, 0.2);
+
+    float body = ink * lit * (1.0 - burnt);
+    float3 rgb = fire * body * 1.25
+               + float3(1.0, 0.55, 0.12) * (front * lit + rim) * ink * 2.2
+               + fire * glow * 0.45 * lit * (1.0 - burnt);
+    float a = body * 0.95 + shadow * 0.5 * lit * (1.0 - burnt) * (1.0 - body);
+    return float4(rgb, a) * in.alpha;
+}
+
+// STICKERS — chunky words on tilted die-cut stickers in the cover's colours; they slap on and peel off.
+fragment float4 fLyricStickers(LyricOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                               texture2d<float> scene [[texture(0)]], texture2d<float> atlas [[texture(1)]]) {
+    if (in.rect.z <= 0.0) return float4(0.0);
+    float A = in.textAspect;
+    float2 p = in.local;
+
+    float2 halfBox = float2(max(A - 0.05, 0.6), 0.9);
+    const float corner = 0.5;
+    float d = sdRoundBox(p, halfBox, corner);
+    float px = fwidth(d) * 1.2;
+    const float border = 0.17;
+    float whole = smoothstep(px, -px, d);
+    float fillMask = smoothstep(px, -px, d + border);
+    float shadow = smoothstep(0.4, -0.25, sdRoundBox(p - float2(0.1, 0.24), halfBox, corner)) * 0.5;
+
+    int pick = int(floor(in.seed * 2.999));
+    float3 fill = pick == 0 ? u.c0.rgb : (pick == 1 ? u.c2.rgb : u.c1.rgb);
+    fill = saturateColor(fill, 1.25);
+    fill *= 0.9 + 0.2 * (0.5 - p.y * 0.3);
+    float3 ink = luma(fill) > 0.5 ? float3(0.04, 0.04, 0.05) : float3(0.98, 0.96, 0.93);
+
+    float text = lyricInk(atlas, in.rect, A, p, 0.0);
+    float3 col = mix(float3(0.98, 0.97, 0.95), fill, fillMask);
+    col = mix(col, ink, text * fillMask);
+    col += float3(1.0) * 0.1 * smoothstep(0.1, -0.3, p.y + 0.4) * fillMask;   // gloss
+
+    float a = whole + shadow * (1.0 - whole);
+    return float4(col * whole, a) * in.alpha;
+}

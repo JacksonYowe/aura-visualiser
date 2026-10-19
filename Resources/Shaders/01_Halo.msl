@@ -1,0 +1,84 @@
+// HALO — the album cover front and centre, wrapped in a ring of spectrum bars.
+
+fragment float4 fHalo(MODE_ARGS, constant RingPulses& pulses [[buffer(1)]]) {
+    float2 p = centered(in.uv, u);
+    float r = length(p);
+
+    // Backdrop: the cover, heavily blurred, slowly turning and breathing with the bass.
+    float3 col = coverBackdrop(prevArt, art, u, p, 6.2, 1.35 + 0.06 * u.bass, u.flow * 0.02);
+    col = saturateColor(col, 1.35) * (0.26 + 0.12 * u.energy);
+    col *= smoothstep(1.15, 0.15, r);
+
+    // Cover geometry.
+    float S = 0.40 * (1.0 + 0.03 * u.bass + 0.06 * u.beat);
+    float halfS = S * 0.5;
+    float dCover = sdRoundBox(p, float2(halfS), S * 0.04);
+
+    // Shadow hugging the cover, then a coloured bloom behind it.
+    col *= 1.0 - 0.6 * smoothstep(0.07, 0.0, max(dCover, 0.0));
+    col += u.c0.rgb * exp(-max(dCover, 0.0) * 8.0) * (0.10 + 0.30 * u.bass + 0.25 * u.beat);
+
+    // Radial spectrum: bass at the top, treble at the bottom, mirrored left/right.
+    float R = halfS * 1.4142 + 0.028;
+    float ang = atan2(p.x, -p.y);
+    float m = abs(ang) / PI;
+    const float NB = 54.0;
+    float cell = m * NB;
+    float idx = floor(cell);
+    float fx = (idx + 0.5) / NB;
+    float v = specAt(spectrum, 0.02 + fx * 0.9);
+    float barLen = 0.008 + 0.17 * v;
+    float arc = (fract(cell) - 0.5) * (PI / NB) * r;
+    float w = 0.36 * (PI / NB) * R;
+    float dBar = sdSegment(float2(arc, r - R), float2(0.0, 0.0), float2(0.0, barLen)) - w;
+
+    float2 dir = p / max(r, 1e-4);
+    float3 edgeColor = cover(prevArt, art, sLinear, dir * 0.42 + 0.5, 3.0, u.artMix);
+    float3 barCol = mix(u.c0.rgb, u.c2.rgb, smoothstep(0.1, 0.9, fx));
+    barCol = mix(barCol, saturateColor(edgeColor, 1.7) * 1.35, 0.3);
+    float aa = fwidth(dBar);
+    float barMask = smoothstep(aa, -aa, dBar);
+    col += barCol * exp(-max(dBar, 0.0) * 55.0) * (0.12 + 0.55 * v);
+    col = mix(col, barCol * (0.7 + 0.7 * v + 0.45 * u.hit), barMask);
+
+    // A thin inner ring that follows the bass.
+    float inner = exp(-abs(r - (R - 0.012)) * 260.0) * (0.15 + 0.6 * u.bass);
+    col += u.c1.rgb * inner;
+
+    // Shockwaves: every beat or big hit launches its own ring, so fast songs keep several going.
+    for (int k = 0; k < 8; k++) {
+        float age = pulses.data[k * 2];
+        float strength = pulses.data[k * 2 + 1];
+        if (age < 0.0 || strength <= 0.0) continue;
+        float t = age / max(pulses.lifetime, 0.2);
+        if (t >= 1.0) continue;
+        float travel = 1.0 - pow(1.0 - t, 2.4);                  // bursts out, then eases
+        float ringR = R + 0.03 + travel * 0.62;
+        float sharp = 95.0 / max(pulses.thickness, 0.2) / (1.0 + 3.0 * t);   // softens as it spreads
+        float fade = strength * pow(1.0 - t, 1.5) * pulses.brightness;
+        float3 tint;
+        if (pulses.colour < 0.5)      tint = mix(u.c2.rgb, u.c0.rgb, t);
+        else if (pulses.colour < 1.5) tint = u.c0.rgb;
+        else if (pulses.colour < 2.5) tint = float3(1.0);
+        else tint = 0.55 + 0.45 * cos(TAU * (float(k) * 0.17 + u.time * 0.08 + t * 0.35 + float3(0.0, 0.33, 0.67)));
+        col += tint * exp(-abs(r - ringR) * sharp) * fade * (0.95 + 0.6 * exp(-age * 12.0));
+    }
+
+    // Drifting sparks around the ring, brighter with treble.
+    float2 dp = rot(p, u.flow * 0.04) * 24.0;
+    float2 cid = floor(dp);
+    float2 h = hash22(cid);
+    float2 f = fract(dp) - 0.5 - (h - 0.5) * 0.6;
+    float spark = smoothstep(0.09, 0.0, length(f)) * step(0.9, h.x) * smoothstep(R * 0.95, R + 0.12, r);
+    col += mix(u.c1.rgb, float3(1.0), 0.4) * spark * (0.15 + 0.7 * u.treble + 1.2 * u.hit);
+
+    // The cover itself.
+    float3 cc = cover(prevArt, art, sLinear, p / S + 0.5, 0.0, u.artMix);
+    cc *= 1.0 + 0.10 * u.beat;
+    float aaC = fwidth(dCover);
+    float coverMask = smoothstep(aaC, -aaC, dCover);
+    col = mix(col, cc, coverMask);
+    col += float3(1.0) * 0.10 * smoothstep(aaC * 1.5, 0.0, abs(dCover));   // hairline edge
+
+    return float4(col, 1.0);
+}

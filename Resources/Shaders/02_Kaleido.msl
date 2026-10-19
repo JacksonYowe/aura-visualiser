@@ -1,0 +1,40 @@
+// KALEIDO — the cover folded through a turning kaleidoscope that zooms on every kick.
+
+fragment float4 fKaleido(MODE_ARGS) {
+    float2 p = centered(in.uv, u);
+    float r = length(p);
+
+    const float segs = 8.0;
+    float sector = TAU / segs;
+    float ang = atan2(p.y, p.x) + u.flow * 0.07 + TAU * 64.0;
+    ang = fmod(ang, sector);
+    ang = abs(ang - sector * 0.5);
+    float2 q = float2(cos(ang), sin(ang)) * r;
+
+    float zoom = 1.25 + 0.3 * sin(u.flow * 0.11) - 0.25 * u.bass - 0.1 * u.beat;
+    float2 drift = float2(0.5 + 0.25 * sin(u.flow * 0.05), 0.5 + u.flow * 0.015);
+    float2 t1 = rot(q, -u.flow * 0.04) * zoom + drift;
+    float lod = max(0.0, log2(float(art.get_width()) * zoom / u.resY));
+
+    // Chromatic split that widens on beats.
+    float2 off = (q / max(r, 1e-4)) * (0.002 + 0.012 * u.beat + 0.01 * u.hit);
+    float3 c = float3(cover(prevArt, art, sMirror, t1 + off, lod, u.artMix).r,
+                      cover(prevArt, art, sMirror, t1, lod, u.artMix).g,
+                      cover(prevArt, art, sMirror, t1 - off, lod, u.artMix).b);
+
+    // A finer second layer spinning the other way, woven in with the treble.
+    float2 t2 = rot(q, u.flow * 0.09) * zoom * 2.3 + drift.yx;
+    float3 c2 = cover(prevArt, art, sMirror, t2, lod + 1.0, u.artMix);
+    c = mix(c, 1.0 - (1.0 - c) * (1.0 - c2 * 0.8), 0.25 + 0.45 * u.treble);
+
+    c = saturateColor(c, 1.25) * (0.72 + 0.4 * u.energy + 0.25 * u.beat);
+
+    // Glowing fold lines tinted by the palette.
+    float seam = exp(-abs(ang - sector * 0.5) * r * 420.0) + exp(-ang * r * 420.0);
+    c += paletteColor(u, r * 0.8 - u.flow * 0.05) * seam * (0.015 + 0.12 * u.mid);
+
+    // Central bloom.
+    c += u.c2.rgb * exp(-r * 7.0) * (0.12 + 0.5 * u.beat);
+    c *= smoothstep(1.05, 0.2, r);
+    return float4(c, 1.0);
+}

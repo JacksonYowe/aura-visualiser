@@ -1,0 +1,46 @@
+// MOSAIC — the cover rebuilt as a wall of LED tiles. Tiles swell with the spectrum
+// (bass in the middle, treble at the edges) and a ripple spreads out on each beat.
+
+fragment float4 fMosaic(MODE_ARGS, constant RingPulses& pulses [[buffer(1)]]) {
+    float a = aspectOf(u);
+    const float rows = 24.0;
+    float cols = floor(rows * a);
+    float2 grid = in.uv * float2(cols, rows);
+    float2 id = floor(grid);
+    float2 f = fract(grid) - 0.5;
+    float2 cuv = (id + 0.5) / float2(cols, rows);
+    float2 pc = centered(cuv, u);
+    float nd = length(pc) / (0.5 * length(float2(a, 1.0)));
+
+    float zoom = 1.0 + 0.04 * u.bass;
+    float2 auv = pc / max(a, 1.0) / zoom + 0.5;
+    float lod = max(0.0, log2(float(art.get_width()) / rows) - 0.5);
+    float3 c = cover(prevArt, art, sLinear, auv, lod, u.artMix);
+
+    float v = specAt(spectrum, 0.02 + nd * 0.8);
+    float ripple = 0.0;
+    for (int k = 0; k < 8; k++) {
+        float age = pulses.data[k * 2];
+        float t = age / max(pulses.lifetime, 0.2);
+        if (age < 0.0 || t >= 1.0) continue;
+        float front = t * 1.35;
+        float width = 6.0 / max(pulses.thickness, 0.2);
+        ripple += pulses.data[k * 2 + 1] * pulses.brightness * (1.0 - t) * exp(-pow((nd - front) * width, 2.0));
+    }
+    ripple = min(ripple, 1.2);
+    float jitter = hash21(id);
+    float twinkle = step(0.9, fract(jitter * 13.0 + u.beatCount * 0.618)) * u.hit;
+
+    float size = clamp(0.30 + 0.55 * v + 0.28 * ripple + 0.2 * twinkle, 0.15, 0.95);
+    float dBox = sdRoundBox(f, float2(size * 0.5), 0.12 * size + 0.03);
+    float px = fwidth(grid.x);
+    float mask = smoothstep(px, -px, dBox);
+
+    float bright = 0.35 + 1.0 * v + 0.8 * ripple + 0.6 * twinkle;
+    float bevel = 0.88 + 0.35 * (-f.x - f.y);
+
+    float3 col = u.c3.rgb * 0.4;
+    col += c * exp(-max(dBox, 0.0) * 12.0) * 0.2 * (0.3 + v);
+    col = mix(col, saturateColor(c, 1.15) * bright * bevel, mask);
+    return float4(col, 1.0);
+}
